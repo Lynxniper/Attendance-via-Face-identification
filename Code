@@ -1,0 +1,100 @@
+import cv2
+import face_recognition
+import os
+import numpy as np
+import pandas as pd
+from datetime import datetime
+
+photos_path = os.path.expanduser(#input ur own path)
+
+images = []
+student_names = []
+encode_list = []
+
+# Load student images and encode faces
+if os.path.exists(photos_path):
+    for file in os.listdir(photos_path):
+        file_path = os.path.join(photos_path, file)
+        try:
+            img = face_recognition.load_image_file(file_path)
+            img_encoding = face_recognition.face_encodings(img)
+            if img_encoding:
+                encode_list.append(img_encoding[0])
+                student_names.append(os.path.splitext(file)[0])
+        except Exception as e:
+            print(f"Error processing file {file}: {e}")
+else:
+    print(f"Error: Folder '{photos_path}' not found.")
+    exit()
+
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
+
+attendance_file = os.path.expanduser(#input ur own path)
+
+desktop_dir = os.path.dirname(attendance_file)
+if not os.path.exists(desktop_dir):
+    print(f"Error: Directory '{desktop_dir}' does not exist. Creating it.")
+    os.makedirs(desktop_dir)
+
+# Create a new attendance sheet every time the script runs
+df = pd.DataFrame(columns=['Name', 'Time'])
+df.to_csv(attendance_file, index=False)  # Overwrite the existing file
+
+face_distance_threshold = 0.45
+
+detected_faces = set()  # To track detected faces
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read frame from webcam.")
+        break
+
+    small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+    rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+    # Find faces in the frame
+    faces_cur_frame = face_recognition.face_locations(rgb_frame)
+    encodes_cur_frame = face_recognition.face_encodings(rgb_frame, faces_cur_frame)
+
+    if not encodes_cur_frame:
+        continue  # Skip to the next frame if no faces are found
+
+    for encode_face, face_loc in zip(encodes_cur_frame, faces_cur_frame):
+        matches = face_recognition.compare_faces(encode_list, encode_face)
+        face_dist = face_recognition.face_distance(encode_list, encode_face)
+
+        best_match_index = np.argmin(face_dist) if face_dist.size > 0 else -1
+
+        if best_match_index != -1 and matches[best_match_index] and face_dist[best_match_index] < face_distance_threshold:
+            name = student_names[best_match_index]
+
+            if name in detected_faces:
+                continue  # Skip this face if it has already been detected
+
+            detected_faces.add(name)
+            top, right, bottom, left = [v * 4 for v in face_loc]  # Resize back
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+            cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+            # Mark attendance with timestamp
+            time_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            df = pd.concat([df, pd.DataFrame({'Name': [name], 'Time': [time_now]})], ignore_index=True)
+            df.to_csv(attendance_file, index=False)  # Overwrite the file with new data
+            print(f'{name} marked present at {time_now}')
+
+        else:
+            top, right, bottom, left = [v * 4 for v in face_loc]  # Resize back
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2) 
+            cv2.putText(frame, "Unknown", (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+    cv2.imshow('Webcam', frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
